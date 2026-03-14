@@ -188,18 +188,20 @@ def get_access_token(force_refresh=False):
 
 S_H2 = (
     "font-size:22px;font-weight:700;line-height:1.4;"
-    "margin:32px 0 16px;color:#1f2937;"
+    "margin:32px 0 16px;color:#333;"
     "padding:8px 16px;border-left:4px solid #7c3aed;"
     "background:#faf5ff;"
 )
 S_H3 = (
     "font-size:18px;font-weight:700;line-height:1.4;"
-    "margin:28px 0 12px;color:#1f2937;"
+    "margin:28px 0 12px;color:#333;"
     "padding-left:12px;border-left:3px solid #7c3aed;"
 )
 S_H4 = "font-size:16px;font-weight:700;margin:24px 0 10px;color:#7c3aed;"
-S_P = "margin:16px 0;line-height:1.8;color:#1f2937;font-size:16px;"
-S_STRONG = "font-weight:600;color:#1f2937;"
+S_SECTION = "color:#333;font-size:16px;line-height:1.8;word-wrap:break-word;"
+S_P = "margin:16px 0;line-height:1.8;color:#333;font-size:16px;"
+S_URL = "color:#7c3aed;word-break:break-all;font-size:14px;"
+S_STRONG = "font-weight:600;color:#333;"
 S_EM = "font-style:italic;color:#4b5563;"
 S_INLINE_CODE = (
     "background:#f5f5f5;color:#e83e8c;padding:2px 6px;border-radius:4px;"
@@ -217,13 +219,13 @@ S_BLOCKQUOTE = (
 S_BQ_P = "margin:0;font-style:italic;color:#4b5563;line-height:1.8;"
 S_UL = "margin:16px 0;padding-left:24px;"
 S_OL = "margin:16px 0;padding-left:24px;"
-S_LI = "margin:8px 0;line-height:1.8;color:#1f2937;"
+S_LI = "margin:8px 0;line-height:1.8;color:#333;"
 S_TABLE = "width:100%;border-collapse:collapse;margin:20px 0;font-size:15px;"
 S_TH = (
     "padding:12px 16px;text-align:left;font-weight:600;"
     "background:#7c3aed;color:#ffffff;border:1px solid #7c3aed;"
 )
-S_TD = "padding:12px 16px;border:1px solid #e5e7eb;color:#1f2937;"
+S_TD = "padding:12px 16px;border:1px solid #e5e7eb;color:#333;"
 S_TD_EVEN = S_TD + "background:#f9fafb;"
 S_HR = "border:none;height:2px;background:#7c3aed;margin:40px 0;opacity:0.5;"
 
@@ -274,6 +276,12 @@ def markdown_to_html(md_text):
         text = re.sub(
             r"\*([^*]+)\*",
             rf'<em style="{S_EM}">\1</em>',
+            text,
+        )
+        # URLs — render as styled span (WeChat blocks external hyperlinks)
+        text = re.sub(
+            r'(https?://[^\s<>"\']+)',
+            rf'<span style="{S_URL}">\1</span>',
             text,
         )
         return text
@@ -368,7 +376,7 @@ def markdown_to_html(md_text):
             text = inline_format(stripped[2:])
             html_parts.append(
                 f'<h1 style="font-size:26px;font-weight:700;'
-                f'margin:24px 0 16px;color:#1f2937;'
+                f'margin:24px 0 16px;color:#333;'
                 f'padding-bottom:12px;border-bottom:3px solid #7c3aed;">'
                 f"{text}</h1>"
             )
@@ -399,15 +407,13 @@ def markdown_to_html(md_text):
             )
             continue
 
-        # --- Unordered list ---
+        # --- Unordered list (use <p> with bullet char for WeChat compat) ---
         if stripped.startswith("- ") or stripped.startswith("* "):
+            close_list()
             text = inline_format(stripped[2:])
-            if not in_list or list_type != "ul":
-                close_list()
-                html_parts.append(f'<ul style="{S_UL}">')
-                in_list = True
-                list_type = "ul"
-            html_parts.append(f'<li style="{S_LI}">{text}</li>')
+            html_parts.append(
+                f'<p style="{S_P}margin:4px 0;">• {text}</p>'
+            )
             continue
 
         # --- Ordered list ---
@@ -422,6 +428,10 @@ def markdown_to_html(md_text):
             html_parts.append(f'<li style="{S_LI}">{text}</li>')
             continue
 
+        # --- Skip empty lines ---
+        if not stripped:
+            continue
+
         # --- Regular paragraph ---
         close_list()
         text = inline_format(stripped)
@@ -434,7 +444,8 @@ def markdown_to_html(md_text):
         code_content = "\n".join(code_lines)
         html_parts.append(f'<pre style="{S_PRE}"><code>{code_content}</code></pre>')
 
-    return "\n".join(html_parts)
+    body = "\n".join(html_parts)
+    return f'<section style="{S_SECTION}">{body}</section>'
 
 
 # ============================================================
@@ -488,7 +499,44 @@ def parse_markdown(filepath):
 # Publish
 # ============================================================
 
-def create_draft(title, html_content, author="", digest=""):
+def upload_thumb_image(image_path):
+    """Upload a thumb image to WeChat and return media_id."""
+    token = get_access_token()
+    url = f"{BASE_URL}/material/add_material?access_token={token}&type=image"
+
+    import mimetypes
+    content_type = mimetypes.guess_type(image_path)[0] or "image/jpeg"
+    filename = os.path.basename(image_path)
+
+    boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+    with open(image_path, "rb") as f:
+        file_data = f.read()
+
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="media"; filename="{filename}"\r\n'
+        f"Content-Type: {content_type}\r\n\r\n"
+    ).encode("utf-8") + file_data + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    req = Request(url, data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+
+    try:
+        with urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        print(f"上传封面图失败: {e}", file=sys.stderr)
+        return None
+
+    if "media_id" in result:
+        print(f"封面图上传成功: {result['media_id']}")
+        return result["media_id"]
+    else:
+        print(f"上传封面图失败: {result}", file=sys.stderr)
+        return None
+
+
+def create_draft(title, html_content, author="", digest="", thumb_media_id=""):
     """Create a draft article via WeChat API."""
     token = get_access_token()
     url = f"{BASE_URL}/draft/add?access_token={token}"
@@ -504,12 +552,26 @@ def create_draft(title, html_content, author="", digest=""):
     while len(digest.encode("utf-8")) > 120:
         digest = digest[:-1]
 
+    # Upload cover image if no thumb_media_id provided
+    if not thumb_media_id:
+        skill_dir = Path(__file__).parent.parent
+        cover_candidates = [
+            skill_dir / "assets" / "default_cover.jpg",
+            skill_dir / "assets" / "default_cover.png",
+        ]
+        for cover_path in cover_candidates:
+            if cover_path.exists():
+                thumb_media_id = upload_thumb_image(str(cover_path))
+                if thumb_media_id:
+                    break
+
     article = {
         "title": title,
         "author": author,
         "digest": digest,
         "content": html_content,
         "content_source_url": "",
+        "thumb_media_id": thumb_media_id or "",
         "show_cover_pic": 0,
         "need_open_comment": 1,
         "only_fans_can_comment": 0,
